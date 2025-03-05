@@ -1,7 +1,6 @@
-import requests
-from peewee import SqliteDatabase, Model
-from Services import Product
 from peewee import *
+import requests
+import json
 
 # Connexion à la base de données SQLite
 db = SqliteDatabase("orders.db")
@@ -37,6 +36,7 @@ def initialize_db():
 
 # Récupérer les produits externes et les insérer dans la base de données
 
+
 def fetch_products():
     url = "http://dimensweb.uqac.ca/~jgnault/shops/products/"
     try:
@@ -47,8 +47,8 @@ def fetch_products():
             products = response.json().get("products", [])
             print(f"{len(products)} produits récupérés")
 
-            # Utilisation d'une transaction pour insérer les produits
-            with db.atomic():  # Transaction pour insérer les produits en une seule opération
+            # Insérer les produits dans la base de données si nécessaire
+            with db.atomic():
                 for prod in products:
                     db.execute_sql('''
                         INSERT OR REPLACE INTO product (id, name, description, price, in_stock, weight, image)
@@ -57,9 +57,14 @@ def fetch_products():
                           prod["in_stock"], prod["weight"], prod["image"]))
                     print(f"Produit ajouté ou mis à jour : {prod['name']}")
 
+            # Retourner les produits sous forme de dictionnaire
+            return {"products": products}
+
         else:
             print(f"Erreur lors de la récupération des produits, statut : {response.status_code}")
-            print(f"Réponse : {response.text}")
+            return {"error": f"Erreur {response.status_code}", "message": response.text}
 
     except requests.RequestException as e:
         print(f"Erreur lors de la récupération des produits : {e}")
+        return {"error": "Exception", "message": str(e)}
+
