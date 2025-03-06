@@ -88,12 +88,14 @@ def get_order(order_id):
     try:
         order = Order.get(Order.id == order_id)
         shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
+        shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
         return jsonify({
             "order": {
                 "id": order.id,
                 "total_price": order.total_price,
                 "total_price_tax": order.total_price_tax,
                 "email": order.email,
+                "shipping_information": shipping_info,
                 "shipping_information": shipping_info,
                 "paid": order.paid,
                 "transaction": order.transaction,
