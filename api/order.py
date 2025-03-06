@@ -1,3 +1,4 @@
+import json 
 from flask import Blueprint, request, jsonify, redirect, url_for
 from peewee import DoesNotExist
 from Services.Order import Order, create_order_table
@@ -84,14 +85,14 @@ def create_order():
 def get_order(order_id):
     try:
         order = Order.get(Order.id == order_id)
-
+        shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
         return jsonify({
             "order": {
                 "id": order.id,
                 "total_price": order.total_price,
                 "total_price_tax": order.total_price_tax,
                 "email": order.email,
-                "shipping_information": order.shipping_information,
+                "shipping_information": shipping_info,
                 "paid": order.paid,
                 "transaction": order.transaction,
                 "product": {
@@ -104,3 +105,88 @@ def get_order(order_id):
 
     except DoesNotExist:
         return jsonify({"error": "Commande non trouvée"}), 404
+
+
+
+@order_bp.route("/order/<int:order_id>", methods=["PUT"])
+def update_order(order_id):
+    try:
+        order = Order.get(Order.id == order_id)
+    except DoesNotExist:
+        return jsonify({"error": "Commande non trouvée"}), 404
+
+    data = request.get_json()
+
+    # Validation des champs obligatoires
+    if "order" not in data:
+        return jsonify({
+            "errors": {
+                "order": {"code": "missing-fields", "name": "Champs obligatoires manquants"}
+            }
+        }), 422
+
+    order_data = data["order"]
+    required_fields = ["email", "shipping_information"]
+    for field in required_fields:
+        if field not in order_data:
+            return jsonify({
+                "errors": {
+                    "order": {"code": "missing-fields", "name": f"Champ '{field}' manquant"}
+                }
+            }), 422
+
+    shipping_info = order_data["shipping_information"]
+    required_shipping_fields = ["country", "address", "postal_code", "city", "province"]
+    for field in required_shipping_fields:
+        if field not in shipping_info:
+            return jsonify({
+                "errors": {
+                    "order": {"code": "missing-fields", "name": f"Champ '{field}' manquant dans shipping_information"}
+                }
+            }), 422
+
+    # Vérification des champs non autorisés
+    allowed_fields = {"email", "shipping_information"}
+    for key in order_data:
+        if key not in allowed_fields:
+            return jsonify({
+                "errors": {
+                    "order": {"code": "invalid-fields", "name": "Champs non autorisés"}
+                }
+            }), 422
+
+    # Calcul des frais de livraison
+    product = order.product
+    total_weight = product.weight * order.quantity
+    if total_weight <= 500:
+        shipping_price = 500  # 5$
+    elif total_weight <= 2000:
+        shipping_price = 1000  # 10$
+    else:
+        shipping_price = 2500  # 25$
+
+    # Calcul de la taxe selon la province
+    province = shipping_info["province"].upper()
+    tax_rates = {
+        "QC": 0.15, "ON": 0.13, "AB": 0.05, "BC": 0.12, "NS": 0.14
+    }
+    tax_rate = tax_rates.get(province, 0.0)
+    total_price_tax = order.total_price * (1 + tax_rate)
+
+    # Mise à jour de la commande
+    order.email = order_data["email"]
+    order.shipping_information = json.dumps(shipping_info)
+    order.shipping_price = shipping_price
+    order.total_price_tax = total_price_tax
+    order.save()
+
+    return jsonify({
+        "order": {
+            "id": order.id,
+            "email": order.email,
+            "shipping_information": json.loads(order.shipping_information),
+            "shipping_price": order.shipping_price,
+            "total_price_tax": order.total_price_tax,
+            # ... autres champs
+        }
+    }), 200
