@@ -13,7 +13,7 @@ class Order(Model):
     email = CharField(null=True)  # Email du client
     shipping_information = TextField(null=True)  # Adresse de livraison en JSON
     paid = BooleanField(default=False)  # Statut de paiement
-    transaction = TextField(null=True)  # Infos de transaction JSON
+    transaction = TextField(null=True)  # Infos de transaction JSON 
     shipping_price = FloatField(null=True)  # Frais de livraison
 
     class Meta:

@@ -67,4 +67,3 @@ def fetch_products():
     except requests.RequestException as e:
         print(f"Erreur lors de la récupération des produits : {e}")
         return {"error": "Exception", "message": str(e)}
-
