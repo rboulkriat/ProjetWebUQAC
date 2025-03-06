@@ -3,7 +3,7 @@ from Connexion.DatabaseService import fetch_products, initialize_db
 
 orders_bp = Blueprint('orders_bp', __name__)
 
-@orders_bp.route("/toto", methods=["GET"])
+@orders_bp.route("/", methods=["GET"])
 def get_products():
     try:
         # Initialiser la base de données
