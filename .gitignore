@@ -1,0 +1,14 @@
+# Ignorer les environnements virtuels
+venv/
+.venv/
+
+# Ignorer les fichiers compilés Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignorer les fichiers système
+.DS_Store
+
+# Ignorer les dépendances Node.js (si jamais tu as un frontend)
+node_modules/
