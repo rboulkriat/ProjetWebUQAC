@@ -175,5 +175,3 @@ def test_modify_restricted_field(client):
     
     assert response.status_code == 422
     assert "non autorisés" in response.json["errors"]["order"]["name"]
-
-

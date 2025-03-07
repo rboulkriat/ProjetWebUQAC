@@ -243,7 +243,7 @@ def update_or_pay_order(order_id):
                     "total_price_tax": order.total_price_tax,
                     "paid": order.paid,
                     "credit_card_info": json.loads(order.credit_card_info),
-                    "transaction_id": order.transaction_id,
+                    "transaction_details":order.transaction_details,
                 }}), 200
             else:
                 return jsonify({"error": payment_response}), 422
