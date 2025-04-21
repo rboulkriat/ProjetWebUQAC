@@ -1,69 +1,67 @@
 from peewee import *
+import os
+import redis
+from dotenv import load_dotenv
 import requests
-import json
 
-# Connexion à la base de données SQLite
-db = SqliteDatabase("orders.db")
+load_dotenv()
 
+# Connexion Redis
+redis_conn = redis.from_url(os.getenv("REDIS_URL"))
+
+# Connexion PostgreSQL avec Peewee
+db = PostgresqlDatabase(
+    os.getenv("DB_NAME"),
+    user=os.getenv("DB_USER"),
+    password=os.getenv("DB_PASSWORD"),
+    host=os.getenv("DB_HOST"),
+    port=int(os.getenv("DB_PORT"))
+)
+
+# Définir un modèle de base
 class BaseModel(Model):
     class Meta:
         database = db
 
+# Modèle Product
+class Product(BaseModel):
+    id = IntegerField(primary_key=True)
+    name = TextField()
+    description = TextField(null=True)
+    price = FloatField(null=True)
+    in_stock = BooleanField(null=True)
+    weight = IntegerField(null=True)
+    image = TextField(null=True)
 
 def initialize_db():
-        try:
-            db.connect(reuse_if_open=True)
-            print("Connexion réussie !")
+    """Initialiser la base de données et créer les tables"""
+    db.connect(reuse_if_open=True)
+    db.create_tables([Product], safe=True)
+    print("Tables créées avec succès !")
 
-            # Création de la table 'Product' avec une requête SQL brute
-            db.execute_sql('CREATE TABLE IF NOT EXISTS product (\n'
-                           '                id INTEGER PRIMARY KEY,\n'
-                           '                name TEXT NOT NULL,\n'
-                           '                description TEXT,\n'
-                           '                price REAL,\n'
-                           '                in_stock BOOLEAN,\n'
-                           '                weight INTEGER,\n'
-                           '                image TEXT\n'
-                           '            )')
-            print("Table 'Product' créée ou déjà existante.")
-
-
-        except Exception as e:
-            print(f"Erreur lors de la connexion à la base de données : {e}")
-        finally:
-            db.close()
-
-
-# Récupérer les produits externes et les insérer dans la base de données
-
-
+# Fonction pour récupérer les produits via l'API
 def fetch_products():
     url = "http://dimensweb.uqac.ca/~jgnault/shops/products/"
     try:
         response = requests.get(url)
-        print(f"Statut de la requête : {response.status_code}")
-
         if response.status_code == 200:
             products = response.json().get("products", [])
-            print(f"{len(products)} produits récupérés")
-
-            # Insérer les produits dans la base de données si nécessaire
-            with db.atomic():
-                for prod in products:
-                    db.execute_sql('''
-                        INSERT OR REPLACE INTO product (id, name, description, price, in_stock, weight, image)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (prod["id"], prod["name"], prod["description"], prod["price"],
-                          prod["in_stock"], prod["weight"], prod["image"]))
-                    print(f"Produit ajouté ou mis à jour : {prod['name']}")
-
-            # Retourner les produits sous forme de dictionnaire
+            if not products:
+                print("Aucun produit trouvé dans la réponse.")
+            else:
+                print(f"{len(products)} produits récupérés.")
+                with db.atomic():
+                    for prod in products:
+                        Product.insert(**prod).on_conflict(
+                            conflict_target=[Product.id],
+                            preserve=[Product.name, Product.description, Product.price,
+                                      Product.in_stock, Product.weight, Product.image]
+                        ).execute()
+                print("Les produits ont été insérés dans la base de données.")
             return {"products": products}
-
         else:
-            print(f"Erreur lors de la récupération des produits, statut : {response.status_code}")
+            print(f"Erreur lors de la récupération des produits : {response.status_code}")
             return {"error": f"Erreur {response.status_code}", "message": response.text}
-
     except requests.RequestException as e:
-        print(f"Erreur lors de la récupération des produits : {e}")
+        print(f"Une exception est survenue lors de la récupération des produits : {e}")
         return {"error": "Exception", "message": str(e)}
