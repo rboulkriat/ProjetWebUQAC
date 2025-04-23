@@ -1,17 +1,21 @@
 from flask import Flask
-
-from api.product import orders_bp
 from api.order import order_bp
+from api.product import products_bp
+from Connexion.DatabaseService import initialize_db
 
 app = Flask(__name__)
 
-# Enregistrer le blueprint
-app.register_blueprint(orders_bp)  # Enregistrer sans préfixe
-app.register_blueprint(order_bp)  # Enregistrement des routes de commande
+# Enregistrer les blueprints
+app.register_blueprint(order_bp)
+app.register_blueprint(products_bp)
 
-@app.route('/')
-def home():
-    return "Bienvenue sur l'application Flask !"
+# Commande CLI pour initialiser la base de données
+@app.cli.command("init-db")
+def init_db():
+    """Créer les tables dans la base de données"""
+    initialize_db()
 
+# Point d'entrée (non utilisé avec flask run, mais utile en test direct)
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0")
+    app.config["DEBUG"] = True
+    app.run(host="0.0.0.0", port=5000)

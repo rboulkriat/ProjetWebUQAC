@@ -1,13 +1,11 @@
 from flask import Blueprint, jsonify
 from Connexion.DatabaseService import fetch_products, initialize_db
 
-orders_bp = Blueprint('orders_bp', __name__)
+products_bp = Blueprint('products_bp', __name__)
 
-@orders_bp.route("/toto", methods=["GET"])
+@products_bp.route("/products/init", methods=["GET"])
 def get_products():
     try:
-        # Initialiser la base de données
-        initialize_db()
 
         # Récupérer les produits depuis la fonction fetch_products
         products_json = fetch_products()

@@ -1,42 +1,70 @@
+import os
+from dotenv import load_dotenv
 from peewee import *
+import redis
 import requests
-import json
 
-# Connexion à la base de données SQLite
-db = SqliteDatabase("orders.db")
+load_dotenv()
 
+# Connexion PostgreSQL
+db = PostgresqlDatabase(
+    os.getenv("DB_NAME"),
+    user=os.getenv("DB_USER"),
+    password=os.getenv("DB_PASSWORD"),
+    host=os.getenv("DB_HOST"),
+    port=int(os.getenv("DB_PORT", 5432))
+)
+
+# Connexion Redis
+redis_conn = redis.from_url(os.getenv("REDIS_URL"))
+
+# Modèle de base
 class BaseModel(Model):
     class Meta:
         database = db
 
+# Modèle Product
+class Product(BaseModel):
+    id = IntegerField(primary_key=True)
+    name = TextField()
+    description = TextField(null=True)
+    price = FloatField(null=True)
+    in_stock = BooleanField(null=True)
+    weight = IntegerField(null=True)
+    image = TextField(null=True)
 
+# Modèle Order
+class Order(BaseModel):
+    product = ForeignKeyField(Product, backref="orders")
+    quantity = IntegerField()
+    total_price = FloatField()
+    total_price_tax = FloatField(null=True)
+    email = CharField(null=True)
+    shipping_information = TextField(null=True)
+    paid = BooleanField(default=False)
+    transaction = TextField(null=True)
+    shipping_price = FloatField(null=True)
+
+# (Facultatif) modèle OrderItem pour commandes à plusieurs produits
+class OrderItem(BaseModel):
+    order = ForeignKeyField(Order, backref="items")
+    product = ForeignKeyField(Product)
+    quantity = IntegerField()
+
+# Création des tables
 def initialize_db():
-        try:
-            db.connect(reuse_if_open=True)
-            print("Connexion réussie !")
+    if db.is_closed():
+        db.connect()
+    db.create_tables([Product, Order, OrderItem], safe=True)
+    print("✅ Tables créées avec succès.")
 
-            # Création de la table 'Product' avec une requête SQL brute
-            db.execute_sql('CREATE TABLE IF NOT EXISTS product (\n'
-                           '                id INTEGER PRIMARY KEY,\n'
-                           '                name TEXT NOT NULL,\n'
-                           '                description TEXT,\n'
-                           '                price REAL,\n'
-                           '                in_stock BOOLEAN,\n'
-                           '                weight INTEGER,\n'
-                           '                image TEXT\n'
-                           '            )')
-            print("Table 'Product' créée ou déjà existante.")
+# Nettoyage de texte (caractère nul)
+def clean_text(value):
+    if isinstance(value, str):
+        return value.replace('\x00', '')
+    return value
 
-
-        except Exception as e:
-            print(f"Erreur lors de la connexion à la base de données : {e}")
-        finally:
-            db.close()
-
-
-# Récupérer les produits externes et les insérer dans la base de données
-
-
+# Récupération des produits depuis l’API
 def fetch_products():
     url = "http://dimensweb.uqac.ca/~jgnault/shops/products/"
     try:
@@ -47,24 +75,32 @@ def fetch_products():
             products = response.json().get("products", [])
             print(f"{len(products)} produits récupérés")
 
-            # Insérer les produits dans la base de données si nécessaire
             with db.atomic():
                 for prod in products:
-                    db.execute_sql('''
-                        INSERT OR REPLACE INTO product (id, name, description, price, in_stock, weight, image)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (prod["id"], prod["name"], prod["description"], prod["price"],
-                          prod["in_stock"], prod["weight"], prod["image"]))
-                    print(f"Produit ajouté ou mis à jour : {prod['name']}")
+                    Product.insert(
+                        id=prod["id"],
+                        name=clean_text(prod["name"]),
+                        description=clean_text(prod.get("description")),
+                        price=prod.get("price"),
+                        in_stock=prod.get("in_stock"),
+                        weight=prod.get("weight"),
+                        image=clean_text(prod.get("image"))
+                    ).on_conflict(
+                        conflict_target=[Product.id],
+                        preserve=[
+                            Product.name,
+                            Product.description,
+                            Product.price,
+                            Product.in_stock,
+                            Product.weight,
+                            Product.image
+                        ]
+                    ).execute()
 
-            # Retourner les produits sous forme de dictionnaire
             return {"products": products}
 
         else:
-            print(f"Erreur lors de la récupération des produits, statut : {response.status_code}")
             return {"error": f"Erreur {response.status_code}", "message": response.text}
 
     except requests.RequestException as e:
-        print(f"Erreur lors de la récupération des produits : {e}")
         return {"error": "Exception", "message": str(e)}
-
