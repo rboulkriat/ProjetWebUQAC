@@ -2,7 +2,7 @@ import json
 import requests
 from flask import Blueprint, request, jsonify, redirect, url_for
 from peewee import DoesNotExist
-from Services.Order import Order, create_order_table
+from Services.Order import Order, create_order_table, OrderProduct
 from Services.Product import Product
 from Connexion.DatabaseService import initialize_db
 
@@ -18,64 +18,92 @@ def create_order():
     try:
         data = request.get_json()
 
-        # Vérification de l'objet product
-        if "product" not in data or "id" not in data["product"] or "quantity" not in data["product"]:
+        # Vérification que l'on a bien un tableau de produits
+        if "products" not in data or not isinstance(data["products"], list) or len(data["products"]) == 0:
             return jsonify({
                 "errors": {
-                    "product": {
+                    "products": {
                         "code": "missing-fields",
-                        "name": "La création d'une commande nécessite un produit avec un ID et une quantité."
+                        "name": "La commande doit inclure une liste de produits avec des quantités."
                     }
                 }
             }), 422
 
-        product_id = data["product"]["id"]
-        quantity = data["product"]["quantity"]
+        total_price = 0
+        products = []
 
-        # Vérification de la quantité
-        if quantity < 1:
-            return jsonify({
-                "errors": {
-                    "product": {
-                        "code": "missing-fields",
-                        "name": "La quantité doit être supérieure ou égale à 1."
+        # Vérification des produits et calcul du total
+        for product_data in data["products"]:
+            if "id" not in product_data or "quantity" not in product_data:
+                return jsonify({
+                    "errors": {
+                        "product": {
+                            "code": "missing-fields",
+                            "name": "Chaque produit doit avoir un ID et une quantité."
+                        }
                     }
-                }
-            }), 422
+                }), 422
 
-        # Vérification si le produit existe
-        try:
-            product = Product.get(Product.id == product_id)
-        except DoesNotExist:
-            return jsonify({
-                "errors": {
-                    "product": {
-                        "code": "not-found",
-                        "name": "Le produit spécifié n'existe pas."
+            product_id = product_data["id"]
+            quantity = product_data["quantity"]
+
+            if quantity < 1:
+                return jsonify({
+                    "errors": {
+                        "product": {
+                            "code": "invalid-quantity",
+                            "name": "La quantité d'un produit doit être supérieure ou égale à 1."
+                        }
                     }
-                }
-            }), 422
+                }), 422
 
-        # Vérification si le produit est en stock
-        if not product.in_stock:
-            return jsonify({
-                "errors": {
-                    "product": {
-                        "code": "out-of-inventory",
-                        "name": "Le produit demandé n'est pas en inventaire."
+            # Vérification si le produit existe
+            try:
+                product = Product.get(Product.id == product_id)
+            except DoesNotExist:
+                return jsonify({
+                    "errors": {
+                        "product": {
+                            "code": "not-found",
+                            "name": "Le produit spécifié n'existe pas."
+                        }
                     }
-                }
-            }), 422
+                }), 422
 
-        # Calcul du total sans taxes
-        total_price = product.price * quantity
+            # Vérification si le produit est en stock
+            if not product.in_stock:
+                return jsonify({
+                    "errors": {
+                        "product": {
+                            "code": "out-of-inventory",
+                            "name": "Le produit demandé n'est pas en inventaire."
+                        }
+                    }
+                }), 422
+
+            # Calcul du prix total pour chaque produit
+            product_total = product.price * quantity
+            total_price += product_total
+            products.append({
+                "product_id": product.id,
+                "quantity": quantity,
+                "total_price": product_total
+            })
 
         # Création de la commande en base de données
+        # Création de la commande (vide d'abord, sans produits)
         order = Order.create(
-            product=product,
-            quantity=quantity,
-            total_price=total_price
+            total_price=total_price,
+            paid=False
         )
+
+        # Création des lignes de commande
+        for p in products:
+            OrderProduct.create(
+                order=order,
+                product=Product.get_by_id(p["product_id"]),
+                quantity=p["quantity"]
+            )
 
         # Retourner l'URL de la commande créée
         return redirect(url_for("order_bp.get_order", order_id=order.id)), 302
@@ -87,23 +115,42 @@ def create_order():
 def get_order(order_id):
     try:
         order = Order.get(Order.id == order_id)
-        shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
-        shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
+        products = []
+        for op in order.order_products:
+            products.append({
+                "product_id": op.product.id,
+                "name": op.product.name,
+                "quantity": op.quantity,
+                "unit_price": op.product.price,
+                "total_price": op.product.price * op.quantity
+            })
+
+        # Calculer la taxe et les frais de livraison en fonction des produits
+        total_price_tax = order.total_price  # taxe préliminaire (sans calcul de taxe pour le moment)
+        shipping_price = 0  # Calcul des frais de livraison
+
+        for product in products:
+            # On suppose que chaque produit a un poids, sinon il faut adapter cette logique
+            product_obj = Product.get(Product.id == product["product_id"])
+            total_weight = product_obj.weight * product["quantity"]
+            shipping_price += calculate_shipping(total_weight)
+
+        # Calculer la taxe
+        province = "QC"  # Par exemple, peut être dynamique selon l'info de l'utilisateur
+        total_price_tax += calculate_tax(province, order.total_price)
+
+        # Retourner les détails de la commande
         return jsonify({
             "order": {
                 "id": order.id,
                 "total_price": order.total_price,
-                "total_price_tax": order.total_price_tax,
+                "total_price_tax": total_price_tax,
                 "email": order.email,
-                "shipping_information": shipping_info,
-                "shipping_information": shipping_info,
+                "shipping_information": json.loads(order.shipping_information) if order.shipping_information else {},
                 "paid": order.paid,
                 "transaction": order.transaction,
-                "product": {
-                    "id": order.product.id,
-                    "quantity": order.quantity
-                },
-                "shipping_price": order.shipping_price
+                "products": products,
+                "shipping_price": shipping_price
             }
         }), 200
 
@@ -135,11 +182,10 @@ def update_or_pay_order(order_id):
 
     data = request.get_json()
 
-    # Vérifier si l'on met à jour l'email et l'adresse de livraison
+    # Mettre à jour les informations de la commande
     if "order" in data:
         order_data = data["order"]
 
-        # Vérifier que l'on ne fournit pas "credit_card" avec "shipping_information" ou "email"
         if "credit_card" in data:
             return jsonify({
                 "error": {
@@ -167,25 +213,9 @@ def update_or_pay_order(order_id):
                     }
                 }), 422
 
-        # Vérification de l'existence du produit
-        try:
-            product = Product.get(Product.id == order.product_id)
-        except DoesNotExist:
-            return jsonify({"errors": {"product": {"code": "not-found", "name": "Produit introuvable"}}}), 404
-
-        # Calcul des frais de livraison
-        total_weight = product.weight * order.quantity
-        shipping_price = calculate_shipping(total_weight)
-
-        # Calcul des taxes
-        province = shipping_info["province"].upper()
-        total_price_tax = order.total_price + calculate_tax(province, order.total_price)
-
         # Mise à jour de la commande
         order.email = order_data["email"]
         order.shipping_information = json.dumps(shipping_info)
-        order.shipping_price = shipping_price
-        order.total_price_tax = total_price_tax
         order.save()
 
         return jsonify({
@@ -193,62 +223,7 @@ def update_or_pay_order(order_id):
                 "id": order.id,
                 "email": order.email,
                 "shipping_information": json.loads(order.shipping_information),
-                "shipping_price": order.shipping_price,
-                "total_price_tax": order.total_price_tax,
             }
         }), 200
-
-    # Gérer le paiement
-    if "credit_card" in data:
-        if not order.email or not order.shipping_information:
-            return jsonify({"error": {
-                "code": "missing-fields",
-                "message": "Les informations du client sont nécessaires avant d'appliquer une carte de crédit."
-            }}), 422
-
-        if order.paid:
-            return jsonify({"error": {
-                "code": "already-paid",
-                "message": "La commande a déjà été payée."
-            }}), 422
-
-        credit_card = data["credit_card"]
-        payload = {
-            "credit_card": credit_card,
-            "amount_charged": order.total_price_tax + order.shipping_price
-        }
-
-        try:
-            response = requests.post(PAYMENT_API_URL, json=payload)
-            payment_response = response.json()
-
-            if response.status_code == 200 and payment_response.get("transaction", {}).get("success"):
-                # Stocker les infos de transaction
-                order.paid = True
-                order.credit_card_info = json.dumps({
-                    "first_digits": payment_response["credit_card"]["first_digits"],
-                    "last_digits": payment_response["credit_card"]["last_digits"],
-                    "expiration_year": payment_response["credit_card"]["expiration_year"],
-                    "expiration_month": payment_response["credit_card"]["expiration_month"]
-                })
-                order.transaction_id = payment_response["transaction"]["id"]
-                order.transaction_details = json.dumps(payment_response["transaction"])
-                order.save()
-
-                return jsonify({"order": {
-                    "id": order.id,
-                    "email": order.email,
-                    "shipping_information": json.loads(order.shipping_information),
-                    "shipping_price": order.shipping_price,
-                    "total_price_tax": order.total_price_tax,
-                    "paid": order.paid,
-                    "credit_card_info": json.loads(order.credit_card_info),
-                    "transaction_details":order.transaction_details,
-                }}), 200
-            else:
-                return jsonify({"error": payment_response}), 422
-
-        except requests.RequestException as e:
-            return jsonify({"error": "Service de paiement indisponible", "details": str(e)}), 503
 
     return jsonify({"error": "Requête invalide"}), 400

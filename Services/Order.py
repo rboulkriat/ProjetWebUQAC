@@ -1,26 +1,31 @@
 from peewee import *
-from Services.Product import Product  # Import du modèle Product
+from Services.Product import Product
 
-# Connexion à la base de données
-db = SqliteDatabase("orders.db")
+# Connexion à la base de données PostgreSQL
+from Connexion.DatabaseService import db
 
 class Order(Model):
-    id = AutoField()  # Clé primaire auto-incrémentée
-    product = ForeignKeyField(Product, backref="orders")  # Relation avec Product
-    quantity = IntegerField()  # Quantité commandée
-    total_price = FloatField()  # Prix total (sans taxes ni livraison)
-    total_price_tax = FloatField(null=True)  # Prix total avec taxes
-    email = CharField(null=True)  # Email du client
-    shipping_information = TextField(null=True)  # Adresse de livraison en JSON
-    paid = BooleanField(default=False)  # Statut de paiement
-    transaction = TextField(null=True)  # Infos de transaction JSON 
-    shipping_price = FloatField(null=True)  # Frais de livraison
+    id = AutoField()
+    total_price = FloatField()
+    total_price_tax = FloatField(null=True)
+    email = CharField(null=True)
+    shipping_information = TextField(null=True)
+    paid = BooleanField(default=False)
+    transaction = TextField(null=True)
+    shipping_price = FloatField(null=True)
 
     class Meta:
-        database = db  # Associer le modèle à la base de données
+        database = db
 
-# Création de la table si elle n'existe pas
+class OrderProduct(Model):
+    order = ForeignKeyField(Order, backref='order_products')
+    product = ForeignKeyField(Product, backref='product_orders')
+    quantity = IntegerField()
+
+    class Meta:
+        database = db
+
 def create_order_table():
     db.connect(reuse_if_open=True)
-    db.create_tables([Order])
+    db.create_tables([Order, OrderProduct])
     db.close()
