@@ -3,8 +3,8 @@ import requests
 from flask import Blueprint, request, jsonify, redirect, url_for
 from peewee import DoesNotExist
 import json
-
 from Connexion.DatabaseService import Order, Product, initialize_db
+
 order_bp = Blueprint('order_bp', __name__)
 PAYMENT_API_URL = "https://dimensweb.uqac.ca/~jgnault/shops/pay/"
 
