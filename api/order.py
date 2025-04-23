@@ -1,9 +1,12 @@
+import json 
+import requests
 from flask import Blueprint, request, jsonify, redirect, url_for
 from peewee import DoesNotExist
 import json
 
 from Connexion.DatabaseService import Order, Product, initialize_db
 order_bp = Blueprint('order_bp', __name__)
+PAYMENT_API_URL = "https://dimensweb.uqac.ca/~jgnault/shops/pay/"
 
 # Initialiser la base de données au lancement du module
 initialize_db()
@@ -82,14 +85,16 @@ def create_order():
 def get_order(order_id):
     try:
         order = Order.get(Order.id == order_id)
-
+        shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
+        shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
         return jsonify({
             "order": {
                 "id": order.id,
                 "total_price": order.total_price,
                 "total_price_tax": order.total_price_tax,
                 "email": order.email,
-                "shipping_information": order.shipping_information,
+                "shipping_information": shipping_info,
+                "shipping_information": shipping_info,
                 "paid": order.paid,
                 "transaction": order.transaction,
                 "product": {
