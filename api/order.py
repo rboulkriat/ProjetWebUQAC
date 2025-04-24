@@ -3,110 +3,124 @@ import requests
 from flask import Blueprint, request, jsonify, redirect, url_for
 from peewee import DoesNotExist
 import json
-from Connexion.DatabaseService import Order, Product, initialize_db
-
+from Connexion.DatabaseService import db ,Order, Product, initialize_db, OrderItem
 order_bp = Blueprint('order_bp', __name__)
 PAYMENT_API_URL = "https://dimensweb.uqac.ca/~jgnault/shops/pay/"
 
-# Initialiser la base de données au lancement du module
-initialize_db()
 
+
+@order_bp.route("/order", methods=["POST"])
 @order_bp.route("/order", methods=["POST"])
 def create_order():
     try:
         data = request.get_json()
 
-        # Vérification de l'objet product
-        if "product" not in data or "id" not in data["product"] or "quantity" not in data["product"]:
+        # 🔁 Compatibilité avec l'ancien format
+        if "product" in data:
+            data["products"] = [data["product"]]
+
+        products_data = data.get("products", [])
+        if not products_data:
             return jsonify({
-                "errors": {
-                    "product": {
-                        "code": "missing-fields",
-                        "name": "La création d'une commande nécessite un produit avec un ID et une quantité."
-                    }
-                }
+                "error": "Aucun produit fourni dans la commande."
             }), 422
 
-        product_id = data["product"]["id"]
-        quantity = data["product"]["quantity"]
+        with db.atomic():
+            order = Order.create(total_price=0)
+            total_price = 0
+            total_weight = 0
+            product_summary = []
 
-        # Vérification de la quantité
-        if quantity < 1:
-            return jsonify({
-                "errors": {
-                    "product": {
-                        "code": "missing-fields",
-                        "name": "La quantité doit être supérieure ou égale à 1."
-                    }
-                }
-            }), 422
+            for item in products_data:
+                product_id = item.get("id")
+                quantity = item.get("quantity", 1)
 
-        # Vérification si le produit existe
-        try:
-            product = Product.get(Product.id == product_id)
-        except DoesNotExist:
-            return jsonify({
-                "errors": {
-                    "product": {
-                        "code": "not-found",
-                        "name": "Le produit spécifié n'existe pas."
-                    }
-                }
-            }), 422
+                if not product_id or quantity < 1:
+                    return jsonify({
+                        "error": f"Produit invalide ou quantité incorrecte : {item}"
+                    }), 422
 
-        # Vérification si le produit est en stock
-        if not product.in_stock:
-            return jsonify({
-                "errors": {
-                    "product": {
-                        "code": "out-of-inventory",
-                        "name": "Le produit demandé n'est pas en inventaire."
-                    }
-                }
-            }), 422
+                product = Product.get_or_none(Product.id == product_id)
+                if not product:
+                    return jsonify({
+                        "error": f"Produit ID {product_id} non trouvé."
+                    }), 404
 
-        # Calcul du total sans taxes
-        total_price = product.price * quantity
+                if not product.in_stock:
+                    return jsonify({
+                        "error": f"Produit ID {product_id} hors stock."
+                    }), 422
 
-        # Création de la commande en base de données
-        order = Order.create(
-            product=product,
-            quantity=quantity,
-            total_price=total_price
-        )
+                OrderItem.create(order=order, product=product, quantity=quantity)
+                total_price += (product.price or 0) * quantity
+                total_weight += (product.weight or 0) * quantity
 
-        # Retourner l'URL de la commande créée
-        return redirect(url_for("order_bp.get_order", order_id=order.id)), 302
+                product_summary.append({
+                    "id": product.id,
+                    "name": product.name,
+                    "quantity": quantity
+                })
+
+            if total_weight <= 500:
+                shipping_price = 500
+            elif total_weight <= 2000:
+                shipping_price = 1000
+            else:
+                shipping_price = 2500
+
+            order.total_price = total_price
+            order.shipping_price = shipping_price
+            order.save()
+
+        return jsonify({
+            "order_id": order.id,
+            "total_price": total_price,
+            "shipping_price": shipping_price,
+            "products": product_summary,
+            "status": "pending"
+        }), 201
 
     except Exception as e:
-        return jsonify({"error": "Internal server error", "message": str(e)}), 500
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
 
 @order_bp.route("/order/<int:order_id>", methods=["GET"])
 def get_order(order_id):
     try:
         order = Order.get(Order.id == order_id)
-        shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
-        shipping_info = json.loads(order.shipping_information) if order.shipping_information else {}
+
+        # On récupère les produits de la commande via OrderItem
+        products = [
+            {
+                "id": item.product.id,
+                "quantity": item.quantity
+            }
+            for item in order.items
+        ]
+
         return jsonify({
             "order": {
                 "id": order.id,
                 "total_price": order.total_price,
-                "total_price_tax": order.total_price_tax,
+                "shipping_price": order.shipping_price,
                 "email": order.email,
-                "shipping_information": shipping_info,
-                "shipping_information": shipping_info,
+                "shipping_information": {} if not order.shipping_information else json.loads(order.shipping_information),
                 "paid": order.paid,
-                "transaction": order.transaction,
-                "product": {
-                    "id": order.product.id,
-                    "quantity": order.quantity
-                },
-                "shipping_price": order.shipping_price
+                "credit_card": {},  # vide pour l'instant
+                "transaction": {} if not order.transaction else json.loads(order.transaction),
+                "products": products
             }
         }), 200
 
     except DoesNotExist:
         return jsonify({"error": "Commande non trouvée"}), 404
+
+    except Exception as e:
+        return jsonify({"error": "Internal server error", "message": str(e)}), 500
 
 @order_bp.route("/order/<int:order_id>", methods=["PUT"])
 def update_order(order_id):

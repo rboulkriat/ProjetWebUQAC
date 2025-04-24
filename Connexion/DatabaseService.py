@@ -35,9 +35,8 @@ class Product(BaseModel):
 
 # Modèle Order
 class Order(BaseModel):
-    product = ForeignKeyField(Product, backref="orders")
-    quantity = IntegerField()
-    total_price = FloatField()
+    id = AutoField()
+    total_price = FloatField(null=True)
     total_price_tax = FloatField(null=True)
     email = CharField(null=True)
     shipping_information = TextField(null=True)
@@ -45,16 +44,19 @@ class Order(BaseModel):
     transaction = TextField(null=True)
     shipping_price = FloatField(null=True)
 
-# (Facultatif) modèle OrderItem pour commandes à plusieurs produits
 class OrderItem(BaseModel):
     order = ForeignKeyField(Order, backref="items")
     product = ForeignKeyField(Product)
     quantity = IntegerField()
 
+
 # Création des tables
 def initialize_db():
+   
+
     if db.is_closed():
         db.connect()
+    db.drop_tables([OrderItem, Order, Product], cascade=True)
     db.create_tables([Product, Order, OrderItem], safe=True)
     print("✅ Tables créées avec succès.")
 
