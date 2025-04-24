@@ -1,4 +1,7 @@
-import json 
+import json
+import os
+
+import redis
 import requests
 from flask import Blueprint, request, jsonify, redirect, url_for
 from peewee import DoesNotExist
@@ -6,6 +9,7 @@ import json
 from Connexion.DatabaseService import db ,Order, Product, initialize_db, OrderItem
 order_bp = Blueprint('order_bp', __name__)
 PAYMENT_API_URL = "https://dimensweb.uqac.ca/~jgnault/shops/pay/"
+redis_client = redis.Redis.from_url(os.getenv("REDIS_URL"))
 
 
 
@@ -15,7 +19,7 @@ def create_order():
     try:
         data = request.get_json()
 
-        # 🔁 Compatibilité avec l'ancien format
+        # Compatibilité avec l'ancien format
         if "product" in data:
             data["products"] = [data["product"]]
 
@@ -91,9 +95,15 @@ def create_order():
 @order_bp.route("/order/<int:order_id>", methods=["GET"])
 def get_order(order_id):
     try:
-        order = Order.get(Order.id == order_id)
+        key = f"order:{order_id}"
+        cached_order = redis_client.get(key)
 
-        # On récupère les produits de la commande via OrderItem
+        if cached_order:
+            print("Commande récupérée depuis Redis")
+            return jsonify({"order": json.loads(cached_order)}), 200
+
+        # Sinon, récupérer depuis Postgres
+        order = Order.get(Order.id == order_id)
         products = [
             {
                 "id": item.product.id,
@@ -102,25 +112,26 @@ def get_order(order_id):
             for item in order.items
         ]
 
-        return jsonify({
-            "order": {
-                "id": order.id,
-                "total_price": order.total_price,
-                "shipping_price": order.shipping_price,
-                "email": order.email,
-                "shipping_information": {} if not order.shipping_information else json.loads(order.shipping_information),
-                "paid": order.paid,
-                "credit_card": {},  # vide pour l'instant
-                "transaction": {} if not order.transaction else json.loads(order.transaction),
-                "products": products
-            }
-        }), 200
+        order_data = {
+            "id": order.id,
+            "total_price": order.total_price,
+            "shipping_price": order.shipping_price,
+            "email": order.email,
+            "shipping_information": {} if not order.shipping_information else json.loads(order.shipping_information),
+            "paid": order.paid,
+            "credit_card": {},
+            "transaction": {} if not order.transaction else json.loads(order.transaction),
+            "products": products
+        }
+
+        return jsonify({"order": order_data}), 200
 
     except DoesNotExist:
         return jsonify({"error": "Commande non trouvée"}), 404
 
     except Exception as e:
         return jsonify({"error": "Internal server error", "message": str(e)}), 500
+
 
 @order_bp.route("/order/<int:order_id>", methods=["PUT"])
 def update_order(order_id):
@@ -204,3 +215,38 @@ def update_order(order_id):
             # ... autres champs
         }
     }), 200
+
+def cache_order(order):
+    key = f"order:{order.id}"
+    order_data = {
+        "id": order.id,
+        "total_price": order.total_price,
+        "shipping_price": order.shipping_price,
+        "email": order.email,
+        "shipping_information": json.loads(order.shipping_information) if order.shipping_information else {},
+        "paid": order.paid,
+        "credit_card": {},
+        "transaction": json.loads(order.transaction) if order.transaction else {},
+        "products": [
+            {
+                "id": item.product.id,
+                "quantity": item.quantity
+            }
+            for item in order.items
+        ]
+    }
+    redis_client.set(key, json.dumps(order_data), ex=3600)  # 1h
+
+# METHODE A PART JUSTE POUR VERIFIER LE CACHE APRES PAIEMENT
+@order_bp.route("/debug/cache/<int:order_id>", methods=["GET"])
+def debug_cache(order_id):
+    import redis
+    import json
+
+    redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+    key = f"order:{order_id}"
+    cached = redis_client.get(key)
+
+    if cached:
+        return jsonify({"from_cache": json.loads(cached)})
+    return jsonify({"message": "Aucune commande en cache"}), 404

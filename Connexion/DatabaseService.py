@@ -58,7 +58,7 @@ def initialize_db():
         db.connect()
     db.drop_tables([OrderItem, Order, Product], cascade=True)
     db.create_tables([Product, Order, OrderItem], safe=True)
-    print("✅ Tables créées avec succès.")
+    print("Tables créées avec succès.")
 
 # Nettoyage de texte (caractère nul)
 def clean_text(value):
