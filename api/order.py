@@ -131,31 +131,81 @@ def get_order(order_id):
         return jsonify({"error": "Internal server error", "message": str(e)}), 500
 
 
-
 @order_bp.route("/order/<int:order_id>", methods=["PUT"])
-def pay_order(order_id):
+def update_and_pay_order(order_id):
     try:
         order = Order.get(Order.id == order_id)
     except DoesNotExist:
         return jsonify({"error": "Commande non trouvée"}), 404
 
-    # Si déjà payé, bloquer modification
+    data = request.get_json()
+
+    # Si la commande est déjà payée, on bloque les modifications
     if order.paid:
         return jsonify({"error": "Commande déjà payée"}), 409
 
-    data = request.get_json()
+    order_data = data.get("order", {})
     credit_card = data.get("credit_card")
 
-    if not credit_card:
-        return jsonify({"error": "Données de carte manquantes"}), 422
+    # --- Traitement des infos client ---
+    if order_data:
+        required_fields = ["email", "shipping_information"]
+        for field in required_fields:
+            if field not in order_data:
+                return jsonify({
+                    "errors": {
+                        "order": {"code": "missing-fields", "name": f"Champ '{field}' manquant"}
+                    }
+                }), 422
 
-    # Marque comme en cours dans Redis
-    redis_client.set(f"order:processing:{order_id}", "processing")
+        shipping_info = order_data["shipping_information"]
+        required_shipping_fields = ["country", "address", "postal_code", "city", "province"]
+        for field in required_shipping_fields:
+            if field not in shipping_info:
+                return jsonify({
+                    "errors": {
+                        "order": {"code": "missing-fields", "name": f"Champ '{field}' manquant dans shipping_information"}
+                    }
+                }), 422
 
-    # Lancer la tâche RQ
-    q.enqueue(process_payment, order_id, credit_card)
+        # Frais de livraison (calcul basé sur tous les OrderItems)
+        total_weight = sum(item.product.weight * item.quantity for item in order.items if item.product.weight)
 
-    return "", 202
+        if total_weight <= 500:
+            shipping_price = 500
+        elif total_weight <= 2000:
+            shipping_price = 1000
+        else:
+            shipping_price = 2500
+
+        # Calcul taxe
+        province = shipping_info["province"].upper()
+        tax_rates = {"QC": 0.15, "ON": 0.13, "AB": 0.05, "BC": 0.12, "NS": 0.14}
+        tax_rate = tax_rates.get(province, 0.0)
+        total_price_tax = order.total_price * (1 + tax_rate)
+
+        order.email = order_data["email"]
+        order.shipping_information = json.dumps(shipping_info)
+        order.shipping_price = shipping_price
+        order.total_price_tax = total_price_tax
+        order.save()
+
+    # --- Traitement du paiement ---
+    if credit_card:
+        redis_client.set(f"order:processing:{order_id}", "processing")
+        q.enqueue(process_payment, order_id, credit_card)
+        return "", 202
+
+    return jsonify({
+        "order": {
+            "id": order.id,
+            "email": order.email,
+            "shipping_information": json.loads(order.shipping_information) if order.shipping_information else {},
+            "shipping_price": order.shipping_price,
+            "total_price_tax": order.total_price_tax,
+            "paid": order.paid
+        }
+    }), 200
 
 def cache_order(order):
     key = f"order:{order.id}"
@@ -177,5 +227,4 @@ def cache_order(order):
         ]
     }
     redis_client.set(key, json.dumps(order_data), ex=3600)  # 1h
-
 
