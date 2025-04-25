@@ -32,7 +32,7 @@ docker exec -it api8inf349-app flask init-db
 
 ### Lancer le projet
 
-```bash
+
 docker compose build
 docker compose up
 
