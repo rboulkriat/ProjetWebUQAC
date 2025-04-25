@@ -4,7 +4,7 @@ from Connexion.DatabaseService import initialize_db, fetch_products
 
 products_bp = Blueprint('products_bp', __name__)
 
-@products_bp.route("/", methods=["GET"])
+@products_bp.route("/produits", methods=["GET"])
 def get_products():
     try:
 
