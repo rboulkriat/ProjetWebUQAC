@@ -36,6 +36,7 @@ class Product(BaseModel):
 # Modèle Order
 class Order(BaseModel):
     id = AutoField()
+    credit_card = TextField(null=True)
     total_price = FloatField(null=True)
     total_price_tax = FloatField(null=True)
     email = CharField(null=True)

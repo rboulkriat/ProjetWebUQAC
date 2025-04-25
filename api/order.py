@@ -1,19 +1,24 @@
-import json
-import os
 
+import os
 import redis
-import requests
 from flask import Blueprint, request, jsonify, redirect, url_for
 from peewee import DoesNotExist
 import json
+
+from rq import Queue
+
 from Connexion.DatabaseService import db ,Order, Product, initialize_db, OrderItem
+from Services.tasks import process_payment
+
+
+
 order_bp = Blueprint('order_bp', __name__)
 PAYMENT_API_URL = "https://dimensweb.uqac.ca/~jgnault/shops/pay/"
 redis_client = redis.Redis.from_url(os.getenv("REDIS_URL"))
+q = Queue(connection=redis)
 
 
 
-@order_bp.route("/order", methods=["POST"])
 @order_bp.route("/order", methods=["POST"])
 def create_order():
     try:
@@ -134,87 +139,29 @@ def get_order(order_id):
 
 
 @order_bp.route("/order/<int:order_id>", methods=["PUT"])
-def update_order(order_id):
+def pay_order(order_id):
     try:
         order = Order.get(Order.id == order_id)
     except DoesNotExist:
         return jsonify({"error": "Commande non trouvée"}), 404
 
+    # Si déjà payé, bloquer modification
+    if order.paid:
+        return jsonify({"error": "Commande déjà payée"}), 409
+
     data = request.get_json()
+    credit_card = data.get("credit_card")
 
-    # Validation des champs obligatoires
-    if "order" not in data:
-        return jsonify({
-            "errors": {
-                "order": {"code": "missing-fields", "name": "Champs obligatoires manquants"}
-            }
-        }), 422
+    if not credit_card:
+        return jsonify({"error": "Données de carte manquantes"}), 422
 
-    order_data = data["order"]
-    required_fields = ["email", "shipping_information"]
-    for field in required_fields:
-        if field not in order_data:
-            return jsonify({
-                "errors": {
-                    "order": {"code": "missing-fields", "name": f"Champ '{field}' manquant"}
-                }
-            }), 422
+    # Marque comme en cours dans Redis
+    redis_client.set(f"order:processing:{order_id}", "processing")
 
-    shipping_info = order_data["shipping_information"]
-    required_shipping_fields = ["country", "address", "postal_code", "city", "province"]
-    for field in required_shipping_fields:
-        if field not in shipping_info:
-            return jsonify({
-                "errors": {
-                    "order": {"code": "missing-fields", "name": f"Champ '{field}' manquant dans shipping_information"}
-                }
-            }), 422
+    # Lancer la tâche RQ
+    q.enqueue(process_payment, order_id, credit_card)
 
-    # Vérification des champs non autorisés
-    allowed_fields = {"email", "shipping_information"}
-    for key in order_data:
-        if key not in allowed_fields:
-            return jsonify({
-                "errors": {
-                    "order": {"code": "invalid-fields", "name": "Champs non autorisés"}
-                }
-            }), 422
-
-    # Calcul des frais de livraison
-    product = order.product
-    total_weight = product.weight * order.quantity
-    if total_weight <= 500:
-        shipping_price = 500  # 5$
-    elif total_weight <= 2000:
-        shipping_price = 1000  # 10$
-    else:
-        shipping_price = 2500  # 25$
-
-    # Calcul de la taxe selon la province
-    province = shipping_info["province"].upper()
-    tax_rates = {
-        "QC": 0.15, "ON": 0.13, "AB": 0.05, "BC": 0.12, "NS": 0.14
-    }
-    tax_rate = tax_rates.get(province, 0.0)
-    total_price_tax = order.total_price * (1 + tax_rate)
-
-    # Mise à jour de la commande
-    order.email = order_data["email"]
-    order.shipping_information = json.dumps(shipping_info)
-    order.shipping_price = shipping_price
-    order.total_price_tax = total_price_tax
-    order.save()
-
-    return jsonify({
-        "order": {
-            "id": order.id,
-            "email": order.email,
-            "shipping_information": json.loads(order.shipping_information),
-            "shipping_price": order.shipping_price,
-            "total_price_tax": order.total_price_tax,
-            # ... autres champs
-        }
-    }), 200
+    return "", 202
 
 def cache_order(order):
     key = f"order:{order.id}"
@@ -237,16 +184,4 @@ def cache_order(order):
     }
     redis_client.set(key, json.dumps(order_data), ex=3600)  # 1h
 
-# METHODE A PART JUSTE POUR VERIFIER LE CACHE APRES PAIEMENT
-@order_bp.route("/debug/cache/<int:order_id>", methods=["GET"])
-def debug_cache(order_id):
-    import redis
-    import json
 
-    redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
-    key = f"order:{order_id}"
-    cached = redis_client.get(key)
-
-    if cached:
-        return jsonify({"from_cache": json.loads(cached)})
-    return jsonify({"message": "Aucune commande en cache"}), 404
