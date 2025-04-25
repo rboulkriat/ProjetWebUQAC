@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Commande</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <h1>Créer une commande</h1>
+
+  <div id="product-list"></div>
+
+  <button onclick="createOrder()">Créer la commande</button>
+  <hr>
+  <h2>Afficher une commande</h2>
+  <input type="number" id="order-id" placeholder="ID de commande">
+  <button onclick="fetchOrder()">Voir la commande</button>
+
+<div id="order-result"></div>
+<hr>
+
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
