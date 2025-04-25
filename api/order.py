@@ -100,14 +100,7 @@ def create_order():
 @order_bp.route("/order/<int:order_id>", methods=["GET"])
 def get_order(order_id):
     try:
-        key = f"order:{order_id}"
-        cached_order = redis_client.get(key)
-
-        if cached_order:
-            print("Commande récupérée depuis Redis")
-            return jsonify({"order": json.loads(cached_order)}), 200
-
-        # Sinon, récupérer depuis Postgres
+        # Récupérer la commande directement depuis Postgres sans utiliser Redis
         order = Order.get(Order.id == order_id)
         products = [
             {
@@ -136,6 +129,7 @@ def get_order(order_id):
 
     except Exception as e:
         return jsonify({"error": "Internal server error", "message": str(e)}), 500
+
 
 
 @order_bp.route("/order/<int:order_id>", methods=["PUT"])
