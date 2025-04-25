@@ -1,0 +1,85 @@
+/* ===== Base vintage pastel ===== */
+body {
+    font-family: 'Courier New', monospace;
+    background-color: #fff7f0;
+    margin: 0;
+    padding: 20px;
+    color: #3a2e39;
+  }
+  
+  h1, h2, h3, h4 {
+    color: #5c3a3a;
+    font-weight: 600;
+  }
+  
+  input, button {
+    font-family: inherit;
+    font-size: 1rem;
+    padding: 10px;
+    margin: 5px 0;
+    border-radius: 50px;
+    border: 1px solid #d8b4a0;
+    width: 100%;
+    box-sizing: border-box;
+    background-color: #fff0f5;
+    color: #3a2e39;
+  }
+  
+  button {
+    background-color: #f4a6b0;
+    color: #fff;
+    cursor: pointer;
+    transition: background-color 0.3s;
+    border: none;
+  }
+  
+  button:hover {
+    background-color: #d9808b;
+  }
+  
+  .container {
+    max-width: 650px;
+    margin: auto;
+    background: #fff5f8;
+    padding: 25px;
+    border-radius: 30px;
+    box-shadow: 0 4px 15px rgba(100, 50, 50, 0.1);
+  }
+  
+  p.success {
+    color: #69b578;
+    font-weight: bold;
+  }
+  
+  p.error {
+    color: #e07a5f;
+    font-weight: bold;
+  }
+  
+  ul {
+    list-style: none;
+    padding: 0;
+    border-radius: 20px;
+    background-color: #ffe0ec;
+    padding: 10px 15px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+  }
+  
+  li {
+    padding: 6px 0;
+    border-bottom: 1px dashed #e4b6c0;
+  }
+  
+  hr {
+    margin: 20px 0;
+    border: none;
+    border-top: 2px dotted #d8b4a0;
+  }
+  
+  /* ===== Responsive ===== */
+  @media (max-width: 600px) {
+    .container {
+      padding: 20px;
+      border-radius: 20px;
+    }
+  }

@@ -1,180 +1,145 @@
-import json 
-import requests
+
+import os
+import redis
 from flask import Blueprint, request, jsonify, redirect, url_for
 from peewee import DoesNotExist
-from Services.Order import Order, create_order_table, OrderProduct
-from Services.Product import Product
-from Connexion.DatabaseService import initialize_db
+import json
+
+from rq import Queue
+
+from Connexion.DatabaseService import db ,Order, Product, initialize_db, OrderItem
+from Services.tasks import process_payment
+
+
 
 order_bp = Blueprint('order_bp', __name__)
 PAYMENT_API_URL = "https://dimensweb.uqac.ca/~jgnault/shops/pay/"
+redis_client = redis.Redis.from_url(os.getenv("REDIS_URL"))
+q = Queue(connection=redis)
 
-# Initialiser la base de données au lancement du module
-initialize_db()
-create_order_table()
+
 
 @order_bp.route("/order", methods=["POST"])
 def create_order():
     try:
         data = request.get_json()
 
-        # Vérification que l'on a bien un tableau de produits
-        if "products" not in data or not isinstance(data["products"], list) or len(data["products"]) == 0:
+        # Compatibilité avec l'ancien format
+        if "product" in data:
+            data["products"] = [data["product"]]
+
+        products_data = data.get("products", [])
+        if not products_data:
             return jsonify({
-                "errors": {
-                    "products": {
-                        "code": "missing-fields",
-                        "name": "La commande doit inclure une liste de produits avec des quantités."
-                    }
-                }
+                "error": "Aucun produit fourni dans la commande."
             }), 422
 
-        total_price = 0
-        products = []
+        with db.atomic():
+            order = Order.create(total_price=0)
+            total_price = 0
+            total_weight = 0
+            product_summary = []
 
-        # Vérification des produits et calcul du total
-        for product_data in data["products"]:
-            if "id" not in product_data or "quantity" not in product_data:
-                return jsonify({
-                    "errors": {
-                        "product": {
-                            "code": "missing-fields",
-                            "name": "Chaque produit doit avoir un ID et une quantité."
-                        }
-                    }
-                }), 422
+            for item in products_data:
+                product_id = item.get("id")
+                quantity = item.get("quantity", 1)
 
-            product_id = product_data["id"]
-            quantity = product_data["quantity"]
+                if not product_id or quantity < 1:
+                    return jsonify({
+                        "error": f"Produit invalide ou quantité incorrecte : {item}"
+                    }), 422
 
-            if quantity < 1:
-                return jsonify({
-                    "errors": {
-                        "product": {
-                            "code": "invalid-quantity",
-                            "name": "La quantité d'un produit doit être supérieure ou égale à 1."
-                        }
-                    }
-                }), 422
+                product = Product.get_or_none(Product.id == product_id)
+                if not product:
+                    return jsonify({
+                        "error": f"Produit ID {product_id} non trouvé."
+                    }), 404
 
-            # Vérification si le produit existe
-            try:
-                product = Product.get(Product.id == product_id)
-            except DoesNotExist:
-                return jsonify({
-                    "errors": {
-                        "product": {
-                            "code": "not-found",
-                            "name": "Le produit spécifié n'existe pas."
-                        }
-                    }
-                }), 422
+                if not product.in_stock:
+                    return jsonify({
+                        "error": f"Produit ID {product_id} hors stock."
+                    }), 422
 
-            # Vérification si le produit est en stock
-            if not product.in_stock:
-                return jsonify({
-                    "errors": {
-                        "product": {
-                            "code": "out-of-inventory",
-                            "name": "Le produit demandé n'est pas en inventaire."
-                        }
-                    }
-                }), 422
+                OrderItem.create(order=order, product=product, quantity=quantity)
+                total_price += (product.price or 0) * quantity
+                total_weight += (product.weight or 0) * quantity
 
-            # Calcul du prix total pour chaque produit
-            product_total = product.price * quantity
-            total_price += product_total
-            products.append({
-                "product_id": product.id,
-                "quantity": quantity,
-                "total_price": product_total
-            })
+                product_summary.append({
+                    "id": product.id,
+                    "name": product.name,
+                    "quantity": quantity
+                })
 
-        # Création de la commande en base de données
-        # Création de la commande (vide d'abord, sans produits)
-        order = Order.create(
-            total_price=total_price,
-            paid=False
-        )
+            if total_weight <= 500:
+                shipping_price = 500
+            elif total_weight <= 2000:
+                shipping_price = 1000
+            else:
+                shipping_price = 2500
 
-        # Création des lignes de commande
-        for p in products:
-            OrderProduct.create(
-                order=order,
-                product=Product.get_by_id(p["product_id"]),
-                quantity=p["quantity"]
-            )
+            order.total_price = total_price
+            order.shipping_price = shipping_price
+            order.save()
 
-        # Retourner l'URL de la commande créée
-        return redirect(url_for("order_bp.get_order", order_id=order.id)), 302
+        return jsonify({
+            "order_id": order.id,
+            "total_price": total_price,
+            "shipping_price": shipping_price,
+            "products": product_summary,
+            "status": "pending"
+        }), 201
 
     except Exception as e:
-        return jsonify({"error": "Internal server error", "message": str(e)}), 500
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
 
 @order_bp.route("/order/<int:order_id>", methods=["GET"])
 def get_order(order_id):
     try:
+        key = f"order:{order_id}"
+        cached_order = redis_client.get(key)
+
+        if cached_order:
+            print("Commande récupérée depuis Redis")
+            return jsonify({"order": json.loads(cached_order)}), 200
+
+        # Sinon, récupérer depuis Postgres
         order = Order.get(Order.id == order_id)
-        products = []
-        for op in order.order_products:
-            products.append({
-                "product_id": op.product.id,
-                "name": op.product.name,
-                "quantity": op.quantity,
-                "unit_price": op.product.price,
-                "total_price": op.product.price * op.quantity
-            })
-
-        # Calculer la taxe et les frais de livraison en fonction des produits
-        total_price_tax = order.total_price  # taxe préliminaire (sans calcul de taxe pour le moment)
-        shipping_price = 0  # Calcul des frais de livraison
-
-        for product in products:
-            # On suppose que chaque produit a un poids, sinon il faut adapter cette logique
-            product_obj = Product.get(Product.id == product["product_id"])
-            total_weight = product_obj.weight * product["quantity"]
-            shipping_price += calculate_shipping(total_weight)
-
-        # Calculer la taxe
-        province = "QC"  # Par exemple, peut être dynamique selon l'info de l'utilisateur
-        total_price_tax += calculate_tax(province, order.total_price)
-
-        # Retourner les détails de la commande
-        return jsonify({
-            "order": {
-                "id": order.id,
-                "total_price": order.total_price,
-                "total_price_tax": total_price_tax,
-                "email": order.email,
-                "shipping_information": json.loads(order.shipping_information) if order.shipping_information else {},
-                "paid": order.paid,
-                "transaction": order.transaction,
-                "products": products,
-                "shipping_price": shipping_price
+        products = [
+            {
+                "id": item.product.id,
+                "quantity": item.quantity
             }
-        }), 200
+            for item in order.items
+        ]
+
+        order_data = {
+            "id": order.id,
+            "total_price": order.total_price,
+            "shipping_price": order.shipping_price,
+            "email": order.email,
+            "shipping_information": {} if not order.shipping_information else json.loads(order.shipping_information),
+            "paid": order.paid,
+            "credit_card": {},
+            "transaction": {} if not order.transaction else json.loads(order.transaction),
+            "products": products
+        }
+
+        return jsonify({"order": order_data}), 200
 
     except DoesNotExist:
         return jsonify({"error": "Commande non trouvée"}), 404
 
-def calculate_shipping(weight):
-    """Calcule les frais de livraison en fonction du poids"""
-    if weight <= 500:
-        return 5  # 5$
-    elif weight <= 2000:
-        return 10  # 10$
-    else:
-        return 25  # 25$
+    except Exception as e:
+        return jsonify({"error": "Internal server error", "message": str(e)}), 500
 
-def calculate_tax(province, total_price):
-    """Calcule la taxe selon la province"""
-    tax_rates = {
-        "QC": 0.15, "ON": 0.13, "AB": 0.05, "BC": 0.12, "NS": 0.14
-    }
-    return total_price * tax_rates.get(province.upper(), 0.0)
 
 @order_bp.route("/order/<int:order_id>", methods=["PUT"])
-def update_or_pay_order(order_id):
+def update_and_pay_order(order_id):
     try:
         order = Order.get(Order.id == order_id)
     except DoesNotExist:
@@ -182,18 +147,15 @@ def update_or_pay_order(order_id):
 
     data = request.get_json()
 
-    # Mettre à jour les informations de la commande
-    if "order" in data:
-        order_data = data["order"]
+    # Si la commande est déjà payée, on bloque les modifications
+    if order.paid:
+        return jsonify({"error": "Commande déjà payée"}), 409
 
-        if "credit_card" in data:
-            return jsonify({
-                "error": {
-                    "code": "invalid-fields",
-                    "message": "Les informations de paiement doivent être envoyées séparément des informations de livraison et d'email."
-                }
-            }), 422
+    order_data = data.get("order", {})
+    credit_card = data.get("credit_card")
 
+    # --- Traitement des infos client ---
+    if order_data:
         required_fields = ["email", "shipping_information"]
         for field in required_fields:
             if field not in order_data:
@@ -213,17 +175,63 @@ def update_or_pay_order(order_id):
                     }
                 }), 422
 
-        # Mise à jour de la commande
+        # Frais de livraison (calcul basé sur tous les OrderItems)
+        total_weight = sum(item.product.weight * item.quantity for item in order.items if item.product.weight)
+
+        if total_weight <= 500:
+            shipping_price = 500
+        elif total_weight <= 2000:
+            shipping_price = 1000
+        else:
+            shipping_price = 2500
+
+        # Calcul taxe
+        province = shipping_info["province"].upper()
+        tax_rates = {"QC": 0.15, "ON": 0.13, "AB": 0.05, "BC": 0.12, "NS": 0.14}
+        tax_rate = tax_rates.get(province, 0.0)
+        total_price_tax = order.total_price * (1 + tax_rate)
+
         order.email = order_data["email"]
         order.shipping_information = json.dumps(shipping_info)
+        order.shipping_price = shipping_price
+        order.total_price_tax = total_price_tax
         order.save()
 
-        return jsonify({
-            "order": {
-                "id": order.id,
-                "email": order.email,
-                "shipping_information": json.loads(order.shipping_information),
-            }
-        }), 200
+    # --- Traitement du paiement ---
+    if credit_card:
+        redis_client.set(f"order:processing:{order_id}", "processing")
+        q.enqueue(process_payment, order_id, credit_card)
+        return "", 202
 
-    return jsonify({"error": "Requête invalide"}), 400
+    return jsonify({
+        "order": {
+            "id": order.id,
+            "email": order.email,
+            "shipping_information": json.loads(order.shipping_information) if order.shipping_information else {},
+            "shipping_price": order.shipping_price,
+            "total_price_tax": order.total_price_tax,
+            "paid": order.paid
+        }
+    }), 200
+
+def cache_order(order):
+    key = f"order:{order.id}"
+    order_data = {
+        "id": order.id,
+        "total_price": order.total_price,
+        "shipping_price": order.shipping_price,
+        "email": order.email,
+        "shipping_information": json.loads(order.shipping_information) if order.shipping_information else {},
+        "paid": order.paid,
+        "credit_card": {},
+        "transaction": json.loads(order.transaction) if order.transaction else {},
+        "products": [
+            {
+                "id": item.product.id,
+                "quantity": item.quantity
+            }
+            for item in order.items
+        ]
+    }
+    redis_client.set(key, json.dumps(order_data), ex=3600)  # 1h
+
